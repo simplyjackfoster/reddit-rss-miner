@@ -12,6 +12,7 @@ from .authors import AuthorFlagger
 from .batch import BatchOptions, BatchRunner, StderrReporter
 from .client import RedditRSSClient
 from .crawl import JsonlAppender, StderrCrawlReporter, SubredditCrawler, read_resume_state
+from .export import DuckDBMissing, query, write_parquet
 from .config import MissingCredentials, load_credentials
 from .pacing import FileLockPacer, state_path_for
 from .terms import load_terms
@@ -52,6 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--listing-sort", default="new", choices=["new", "hot", "top", "rising"], help="CRAWL: listing order")
     ap.add_argument("--max-posts", type=int, default=0, help="CRAWL: cap on total posts in the --rows file (resumed ones count); 0 = until the listing ends")
     ap.add_argument("--resume", action="store_true", help="CRAWL: continue an interrupted crawl using the existing --rows file as the checkpoint")
+    ap.add_argument("--parquet", metavar="FILE", help="BATCH/CRAWL: also write the rows as typed Parquet (needs duckdb)")
+    ap.add_argument("--convert", nargs="+", metavar="ROWS.jsonl",
+                    help="convert/merge one or more row JSONL files into --parquet FILE (typed, with a source column)")
+    ap.add_argument("--query", dest="sql", metavar="SQL", help="run SQL against a `rows` view over --from files and print the result")
+    ap.add_argument("--from", dest="sources", nargs="+", metavar="FILE", help="--query: .parquet and/or .jsonl row files")
     ap.add_argument("--flag-authors", action="append", default=[], metavar="[LABEL:]NAME,NAME",
                     help="tag rows by these authors in author_flags (repeatable; default label 'flagged'). Explicit only: RSS has no flair data")
     return ap
@@ -61,6 +67,36 @@ def build_client(delay: float = 1.0) -> RedditRSSClient:
     creds = load_credentials()
     pacer = FileLockPacer(state_path_for(creds.token), interval=delay)   # shared across processes on this token
     return RedditRSSClient(RateLimitedTransport(creds, pacer=pacer))
+
+
+def _maybe_parquet(args: argparse.Namespace) -> None:
+    if args.parquet:
+        n = write_parquet([args.rows], args.parquet)
+        print(f"parquet -> {args.parquet} ({n} rows, typed schema)")
+
+
+def run_convert_command(args: argparse.Namespace) -> int:
+    if not args.parquet:
+        print("--convert needs --parquet FILE", file=sys.stderr)
+        return 2
+    n = write_parquet(args.convert, args.parquet)
+    print(f"parquet -> {args.parquet} ({n} rows from {len(args.convert)} file(s))")
+    return 0
+
+
+def run_query_command(args: argparse.Namespace) -> int:
+    if not args.sources:
+        print("--query needs --from FILE [FILE...]", file=sys.stderr)
+        return 2
+    try:
+        columns, rows = query(args.sources, args.sql)
+    except Exception as e:                       # duckdb.Error subclasses; keep the message, drop the traceback
+        print(f"query failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+    print("\t".join(columns))
+    for r in rows:
+        print("\t".join("" if v is None else str(v) for v in r))
+    return 0
 
 
 def run_crawl_command(args: argparse.Namespace, client: RedditRSSClient) -> int:
@@ -79,6 +115,7 @@ def run_crawl_command(args: argparse.Namespace, client: RedditRSSClient) -> int:
     print(f"rows -> {args.rows}   summary -> {summary_path}")
     print(f"posts fetched: {summary.posts_fetched}, comments: {summary.comments_total}, rows: {summary.rows_written}, "
           f"fetch errors: {summary.fetch_errors}, ceiling suspected: {summary.ceiling_suspected}")
+    _maybe_parquet(args)
     return 0
 
 
@@ -105,6 +142,7 @@ def run_batch_command(args: argparse.Namespace, client: RedditRSSClient) -> int:
         print(f"  {ts.verdict:24s} {key:34s} hits={ts.search_hits} post_precision={ts.post_level_precision} "
               f"posts_kept={ts.posts_kept} comments_kept={ts.comments_kept}/{ts.comments_fetched}{tripped}")
     print(f"stats -> {sink.stats_path}")
+    _maybe_parquet(args)
     return 0
 
 
@@ -136,6 +174,14 @@ def run_simple_command(args: argparse.Namespace, client: RedditRSSClient, parser
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:
+        if args.convert:                       # offline: no credentials needed
+            return run_convert_command(args)
+        if args.sql:
+            return run_query_command(args)
+    except DuckDBMissing as e:
+        print(str(e), file=sys.stderr)
+        return 2
     try:
         client = build_client(args.delay)
     except MissingCredentials as e:

@@ -74,6 +74,19 @@ exhausts at or above 900 posts the crawl prints a distinct `[ceiling]` line and 
 `ceiling_suspected: true` in the summary. That is a platform limit, not confirmation that no older
 history exists. Search mode with `--time year` or `--time month` reaches further back.
 
+### Query the output with SQL
+
+```bash
+pip install duckdb
+reddit-rss-miner --convert batch.jsonl crawl.jsonl --parquet rows.parquet   # typed, merged, with a source column
+reddit-rss-miner --query "SELECT matched_in, count(*) FROM rows GROUP BY 1" --from rows.parquet
+```
+
+Add `--parquet FILE` to any batch or crawl run to write Parquet alongside the JSONL. Column types
+are declared rather than inferred, so every file has the same schema even when a column is empty in
+it. See [QUERY_GUIDE.md](QUERY_GUIDE.md) for the schema and example queries. DuckDB is optional; the
+miner itself needs only `requests`.
+
 ### Row schema
 
 `sub, post_id, post_title, item_id, item_type (post|comment), author, body, url, updated,
@@ -181,6 +194,8 @@ reddit_rss_miner/
                 CircuitBreaker, Row/TermStats/         (breaker, fetch-error tolerance), verdicts,
                 BatchStats, Reporter                   progress reporting via a Reporter protocol
   writers.py    JsonlFileSink, InMemorySink (RowSink)  output; the runner never touches the filesystem
+  export.py     ROW_SCHEMA, write_parquet, connect,     typed Parquet export and SQL over rows via DuckDB
+                query                                   (optional dependency)
   cli.py        build_parser(), main()                 argument parsing and the composition root
 ```
 

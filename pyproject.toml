@@ -4,11 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reddit-rss-miner"
-version = "0.3.0"
+version = "0.4.0"
 description = "Search subreddits for product mentions and pull matching posts and comments via authenticated Reddit RSS feeds."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["requests>=2.31"]
+
+[project.optional-dependencies]
+query = ["duckdb>=1.0"]
+test = ["pytest>=8", "duckdb>=1.0"]
 
 [project.scripts]
 reddit-rss-miner = "reddit_rss_miner.cli:main"

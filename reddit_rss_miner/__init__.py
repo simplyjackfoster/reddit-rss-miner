@@ -13,6 +13,7 @@ from .batch import (BatchOptions, BatchResult, BatchRunner, BatchStats, CircuitB
 from .authors import AuthorFlagger
 from .client import CommentFetcher, ListingReader, PostSearcher, RedditRSSClient, normalize_post_path
 from .crawl import CrawlSummary, JsonlAppender, ResumeState, SubredditCrawler, read_resume_state
+from .export import EXPORTED_COLUMNS, ROW_SCHEMA, connect, query, write_parquet
 from .pacing import FileLockPacer, IntervalPacer, NoPacer, Pacer, state_path_for
 from .config import Credentials, MissingCredentials, load_credentials
 from .feed import Entry, extract_media, parse_entries, strip_html
@@ -20,7 +21,7 @@ from .terms import MatchResult, Term, load_terms, match_term
 from .transport import HttpError, RateLimitedTransport, Transport, redact
 from .writers import InMemorySink, JsonlFileSink, RowSink
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 RedditRSS = RedditRSSClient       # legacy name
 
@@ -30,6 +31,7 @@ def load_env() -> Credentials:    # legacy name
 
 
 __all__ = [
+    "EXPORTED_COLUMNS", "ROW_SCHEMA", "connect", "query", "write_parquet",
     "AuthorFlagger", "ListingReader", "CrawlSummary", "JsonlAppender", "ResumeState", "SubredditCrawler",
     "read_resume_state", "FileLockPacer", "IntervalPacer", "NoPacer", "Pacer", "state_path_for",
     "BatchOptions", "BatchResult", "BatchRunner", "BatchStats", "CircuitBreaker", "NullReporter", "Reporter",
