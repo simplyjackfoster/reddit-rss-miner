@@ -18,11 +18,13 @@ authenticated with a private feed token. No OAuth app, no browser automation.
 ## Setup
 
 ```bash
-pip install -r requirements.txt
+pip install -e .          # installs the `reddit-rss-miner` command; or: pip install -r requirements.txt
 cp .env.example .env      # fill REDDIT_FEED_TOKEN and REDDIT_FEED_USER
 cp terms.example.json terms.json
-python3 reddit_rss_miner.py --post r/productivity/comments/qpfrdk   # smoke test: one post, 14 comments
+reddit-rss-miner --post r/productivity/comments/qpfrdk   # smoke test: one post, 14 comments
 ```
+
+Without installing, every command below also works as `python3 -m reddit_rss_miner ...`.
 
 Get the token from <https://www.reddit.com/prefs/feeds>: open any RSS link on that page and copy
 the `feed=` and `user=` query parameters. Credentials resolve from environment variables, then
@@ -36,13 +38,13 @@ Never commit `.env`. Changing the account password invalidates the token immedia
 Simple mode: one subreddit, one query, every comment dumped.
 
 ```bash
-python3 reddit_rss_miner.py productivity '"things 3"' --limit 5 --out out.json
+reddit-rss-miner productivity '"things 3"' --limit 5 --out out.json
 ```
 
 Batch mode: subreddits × products, filtered for relevance, with stats.
 
 ```bash
-python3 reddit_rss_miner.py --subs productivity,macapps --terms terms.json --limit 100 --rows rows.jsonl
+reddit-rss-miner --subs productivity,macapps --terms terms.json --limit 100 --rows rows.jsonl
 ```
 
 Writes `rows.jsonl` (one line per matched post or comment) and `rows.stats.json`.
@@ -115,15 +117,43 @@ A distinctive name (Obsidian) needs only `search` and `aliases`. A common-word n
 ## Programmatic use
 
 ```python
-from reddit_rss_miner import RedditRSS, load_env, load_terms, run_batch
+from reddit_rss_miner import (BatchOptions, BatchRunner, RateLimitedTransport, RedditRSSClient,
+                              StderrReporter, load_credentials, load_terms)
 
-rd = RedditRSS(load_env())
-for post in rd.search("productivity", '"things 3"', limit=20):
-    post, comments = rd.comments(post["url"])
+client = RedditRSSClient(RateLimitedTransport(load_credentials()))
+for post in client.search("productivity", '"things 3"', limit=20):     # Entry objects
+    post, comments = client.comments(post.url)
 
-rows, stats = run_batch(rd, ["productivity", "macapps"], load_terms("terms.json"),
-                        limit=100, sort="relevance", t="all", delay=1.0)
+result = BatchRunner(client, load_terms("terms.json"), BatchOptions(limit=100), StderrReporter()).run(["productivity", "macapps"])
+result.rows            # list[Row]      -> row.to_dict()
+result.stats           # BatchStats     -> stats.to_dict(), stats.summary()
 ```
+
+`run_batch(...)`, `RedditRSS`, `load_env` and `match_term` are kept as aliases for code written
+against the earlier single-file version; `run_batch` returns plain dicts.
+
+## Architecture
+
+```
+reddit_rss_miner/
+  config.py     Credentials + load_credentials()      env > ./.env > ~/.reddit_feed.env; never in code
+  transport.py  RateLimitedTransport (Transport)      UA, auth params, 429 backoff, bounded retries
+  feed.py       Entry, parse_entries, strip_html,     Atom parsing and content-HTML utilities; no network
+                extract_media
+  client.py     RedditRSSClient (PostSearcher,        Reddit URL shapes: search.rss pagination, thread .rss
+                CommentFetcher)
+  terms.py      Term, MatchResult, load_terms         product definitions and the per-item matcher
+  batch.py      BatchOptions, BatchRunner,            search phase (zero-hit retry), comment phase
+                CircuitBreaker, Row/TermStats/         (breaker, fetch-error tolerance), verdicts,
+                BatchStats, Reporter                   progress reporting via a Reporter protocol
+  writers.py    JsonlFileSink, InMemorySink (RowSink)  output; the runner never touches the filesystem
+  cli.py        build_parser(), main()                 argument parsing and the composition root
+```
+
+Each module has one job and depends only on the layers above it. The runner takes any object
+satisfying `PostSearcher` + `CommentFetcher`, any `Reporter`, and injectable `sleep`/`clock`, so the
+whole batch pipeline is tested offline with a fake client and no monkeypatching. Concrete classes are
+wired together only in `cli.py`.
 
 ## Credits
 
@@ -136,5 +166,9 @@ service that serves subreddit listing feeds as JSON. Re-implemented here in stdl
 Offline, no network:
 
 ```bash
-python3 tests/test_filter.py      # or: python3 -m pytest
+python3 -m pytest
 ```
+
+Modules are tested individually (`tests/test_<module>.py`); `tests/conftest.py` holds the shared
+fake client scenario. The batch tests assert the exact row schema and `stats.json` key layout, since
+downstream consumers depend on them.
