@@ -1,0 +1,12 @@
+.env
+*.env
+!.env.example
+terms.json
+!terms.example.json
+*.jsonl
+*.stats.json
+out.json
+__pycache__/
+*.pyc
+.DS_Store
+.pytest_cache/

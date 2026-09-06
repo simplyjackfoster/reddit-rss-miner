@@ -1,0 +1,54 @@
+{
+  "Things": {
+    "search": "\"things 3\" OR \"things app\" OR (\"things\" (todoist OR omnifocus OR ticktick OR \"cultured code\"))",
+    "aliases": [
+      "things"
+    ],
+    "strong_aliases": [
+      "things 3",
+      "things3",
+      "culturedcode.com",
+      "things app",
+      "cultured code"
+    ],
+    "require": [
+      "app",
+      "todo",
+      "to-do",
+      "task",
+      "tasks",
+      "mac",
+      "ios",
+      "iphone",
+      "ipad",
+      "todoist",
+      "ticktick",
+      "omnifocus",
+      "$",
+      "subscription",
+      "reminders",
+      "gtd",
+      "cultured code"
+    ],
+    "exclude": [
+      "things to\\b",
+      "things (?:i|you|we|they|he|she|it|like|such as|that|which|are|were)\\b",
+      "\\b(?:all|many|some|other|few|good|great|big|first|those|these|of) things",
+      "^things$",
+      "things\\s*!",
+      "(?:^|[.!?]\\s+)things\\s*\\."
+    ]
+  },
+  "Obsidian": {
+    "search": "\"obsidian\"",
+    "aliases": [
+      "obsidian"
+    ],
+    "strong_aliases": [
+      "obsidian.md",
+      "obsidian sync",
+      "obsidian publish",
+      "obsidian vault"
+    ]
+  }
+}
