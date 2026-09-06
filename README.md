@@ -41,6 +41,11 @@ Simple mode: one subreddit, one query, every comment dumped.
 reddit-rss-miner productivity '"things 3"' --limit 5 --out out.json
 ```
 
+**Running two instances at once is safe.** Reddit's rate limit is per account, so every process
+using the same token shares one request stream through a small lock file in
+`~/.cache/reddit-rss-miner/` (named by a hash of the token, never the token). `--delay` is the shared
+minimum interval. A 429 seen by one process makes the others back off too. POSIX only (`fcntl`).
+
 Batch mode: subreddits × products, filtered for relevance, with stats.
 
 ```bash
@@ -49,10 +54,35 @@ reddit-rss-miner --subs productivity,macapps --terms terms.json --limit 100 --ro
 
 Writes `rows.jsonl` (one line per matched post or comment) and `rows.stats.json`.
 
+Crawl mode: one dedicated subreddit, every post and comment thread, no filtering.
+
+```bash
+reddit-rss-miner --full-subreddit productivity --rows productivity.jsonl
+reddit-rss-miner --full-subreddit productivity --rows productivity.jsonl --resume   # after an interruption
+```
+
+A product's own subreddit is on-topic by construction, so rows are written unfiltered with
+`matched_in: "dedicated_subreddit"` in the same schema as batch mode, which keeps both outputs
+mergeable. Rows for each post are appended in one write, so a kill loses at most the post in flight,
+and the output file is its own checkpoint: `--resume` skips posts already present and continues the
+listing after the last one. `--max-posts N` caps the total posts in the file, `--listing-sort` picks
+the listing (`new` by default). A `<rows>.crawl.json` summary is written at the end.
+
+**The 1,000-item ceiling.** Reddit listings end after about 1,000 items (fewer once removed posts
+drop out; measured 988 on a large subreddit) no matter how old the subreddit is. When the listing
+exhausts at or above 900 posts the crawl prints a distinct `[ceiling]` line and sets
+`ceiling_suspected: true` in the summary. That is a platform limit, not confirmation that no older
+history exists. Search mode with `--time year` or `--time month` reaches further back.
+
 ### Row schema
 
 `sub, post_id, post_title, item_id, item_type (post|comment), author, body, url, updated,
-links, images, matched_terms, matched_in (post|comment|thread_context), snippet`
+links, images, matched_terms, matched_in (post|comment|thread_context|dedicated_subreddit), snippet,
+author_flags`
+
+`author_flags` is filled from `--flag-authors` (repeatable, `name1,name2` or `label:name1,name2`,
+case-insensitive). RSS exposes no flair or moderator status, so nothing is inferred: a company's
+account is flagged only if you list it. Works in batch and crawl mode.
 
 `links` holds outbound URLs the author wrote, or the target of a link post. `images` holds `<img>`
 sources. Reddit-internal anchors (user pages, the thread itself, relative paths) are stripped.
@@ -106,8 +136,8 @@ A distinctive name (Obsidian) needs only `search` and `aliases`. A common-word n
 - `--limit` is total across the subs listed (one pooled `r/a+b` search per product). Add `--per-sub`
   to run one search per (subreddit, term) with the limit applied per sub; stats keys then read
   `<sub> :: <term>`. Every row carries `sub` either way.
-- Each post costs one request for its comments at `--delay` seconds apart (default 1). Ten products
-  at 100 posts each is roughly 20 minutes worst case; keep the delay at 1 or higher.
+- Each post costs one request for its comments, paced at `--delay` seconds (default 1) across all
+  processes on the token. Ten products at 100 posts each is roughly 20 minutes worst case.
 - Strict filtering is the default. `--thread-context` also keeps non-matching comments under
   matched posts, tagged `thread_context`.
 - RSS carries no score, parent id, depth, or total comment count. Comments are flat.
@@ -143,6 +173,10 @@ reddit_rss_miner/
   client.py     RedditRSSClient (PostSearcher,        Reddit URL shapes: search.rss pagination, thread .rss
                 CommentFetcher)
   terms.py      Term, MatchResult, load_terms         product definitions and the per-item matcher
+  pacing.py     Pacer, IntervalPacer, FileLockPacer    per-token request stream shared across processes
+  authors.py    AuthorFlagger                          explicit username -> label flags; no inference
+  crawl.py      SubredditCrawler, JsonlAppender,       dedicated-subreddit crawl, resume from the
+                read_resume_state, CrawlSummary        output file, ceiling detection
   batch.py      BatchOptions, BatchRunner,            search phase (zero-hit retry), comment phase
                 CircuitBreaker, Row/TermStats/         (breaker, fetch-error tolerance), verdicts,
                 BatchStats, Reporter                   progress reporting via a Reporter protocol

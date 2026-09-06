@@ -3,7 +3,8 @@ import json
 from reddit_rss_miner.cli import build_parser, main
 
 EXPECTED_FLAGS = {"--limit", "--sort", "--time", "--post", "--delay", "--out", "--subs", "--terms", "--rows", "--scope",
-                  "--thread-context", "--breaker", "--progress", "--per-sub", "-h", "--help"}
+                  "--thread-context", "--breaker", "--progress", "--per-sub", "-h", "--help",
+                  "--full-subreddit", "--listing-sort", "--max-posts", "--resume", "--flag-authors"}
 
 
 def test_flag_set_unchanged():
@@ -36,3 +37,15 @@ def test_batch_command_writes_files(monkeypatch, tmp_path, terms):
     stats = json.loads((tmp_path / "r.stats.json").read_text())
     assert stats["summary"]["verdicts"]["x :: Craft"] == "breaker_tripped"
     assert rows.read_text().count("\n") == stats["summary"]["rows_kept_strict"]
+
+
+def test_crawl_command_writes_rows_and_summary(monkeypatch, tmp_path):
+    from test_crawl import ListingFake
+    monkeypatch.setattr("reddit_rss_miner.cli.build_client", lambda delay=1.0: ListingFake(7, page=5))
+    rows = tmp_path / "c.jsonl"
+    assert main(["--full-subreddit", "x", "--rows", str(rows), "--progress", "0", "--flag-authors", "official:b"]) == 0
+    summary = json.loads((tmp_path / "c.crawl.json").read_text())
+    assert summary["posts_fetched"] == 7 and summary["exhausted"] and not summary["ceiling_suspected"]
+    lines = [json.loads(l) for l in rows.read_text().splitlines()]
+    assert len(lines) == 21 and all(l["matched_in"] == "dedicated_subreddit" for l in lines)
+    assert sum(1 for l in lines if l["author_flags"] == ["official"]) == 14

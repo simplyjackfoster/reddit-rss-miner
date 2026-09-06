@@ -10,14 +10,17 @@ Compatibility aliases for code written against the single-file version are kept 
 """
 from .batch import (BatchOptions, BatchResult, BatchRunner, BatchStats, CircuitBreaker, NullReporter, Reporter,
                     Row, StderrReporter, TermStats, run_batch)
-from .client import CommentFetcher, PostSearcher, RedditRSSClient, normalize_post_path
+from .authors import AuthorFlagger
+from .client import CommentFetcher, ListingReader, PostSearcher, RedditRSSClient, normalize_post_path
+from .crawl import CrawlSummary, JsonlAppender, ResumeState, SubredditCrawler, read_resume_state
+from .pacing import FileLockPacer, IntervalPacer, NoPacer, Pacer, state_path_for
 from .config import Credentials, MissingCredentials, load_credentials
 from .feed import Entry, extract_media, parse_entries, strip_html
 from .terms import MatchResult, Term, load_terms, match_term
 from .transport import HttpError, RateLimitedTransport, Transport, redact
 from .writers import InMemorySink, JsonlFileSink, RowSink
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 RedditRSS = RedditRSSClient       # legacy name
 
@@ -27,6 +30,8 @@ def load_env() -> Credentials:    # legacy name
 
 
 __all__ = [
+    "AuthorFlagger", "ListingReader", "CrawlSummary", "JsonlAppender", "ResumeState", "SubredditCrawler",
+    "read_resume_state", "FileLockPacer", "IntervalPacer", "NoPacer", "Pacer", "state_path_for",
     "BatchOptions", "BatchResult", "BatchRunner", "BatchStats", "CircuitBreaker", "NullReporter", "Reporter",
     "Row", "StderrReporter", "TermStats", "run_batch", "CommentFetcher", "PostSearcher", "RedditRSSClient",
     "RedditRSS", "normalize_post_path", "Credentials", "MissingCredentials", "load_credentials", "load_env",

@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Mapping, Protocol, Sequence
 
+from .authors import AuthorFlagger
 from .client import CommentFetcher, PostSearcher
 from .feed import Entry
 from .terms import DISCARD_REASONS, Term
@@ -75,6 +76,7 @@ class Row:
     matched_terms: list[str]
     matched_in: str
     snippet: str | None
+    author_flags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -83,6 +85,7 @@ class Row:
             "body": self.body, "url": self.url, "updated": self.updated,
             "links": self.links, "images": self.images,
             "matched_terms": self.matched_terms, "matched_in": self.matched_in, "snippet": self.snippet,
+            "author_flags": self.author_flags,
         }
 
 
@@ -285,7 +288,9 @@ class BatchRunner:
         reporter: Reporter | None = None,
         sleep: Callable[[float], None] | None = None,
         clock: Callable[[], float] | None = None,
+        flagger: AuthorFlagger | None = None,
     ) -> None:
+        self._flagger = flagger or AuthorFlagger()
         self._client = client
         self._terms = dict(terms)
         self._opt = options
@@ -427,23 +432,23 @@ class BatchRunner:
                 rows.append(self._row(post, comment, MATCHED_IN_THREAD_CONTEXT, [n for n, _ in post_terms], None))
         return rows
 
-    @staticmethod
-    def _row(post: Entry, item: Entry, matched_in: str, terms: list[str], snippet: str | None) -> Row:
+    def _row(self, post: Entry, item: Entry, matched_in: str, terms: list[str], snippet: str | None) -> Row:
         return Row(
             sub=subreddit_of(post.url), post_id=post.id, post_title=post.title,
             item_id=item.id, item_type=MATCHED_IN_POST if item is post else MATCHED_IN_COMMENT,
             author=item.author, body=item.body, url=item.url, updated=item.updated,
             links=list(item.links), images=list(item.images),
             matched_terms=terms, matched_in=matched_in, snippet=snippet,
+            author_flags=self._flagger.flags(item.author),
         )
 
 
 def run_batch(rd, subs, terms, limit, sort, t, delay, thread_context=False, scope="all",
               breaker_after=12, progress_every=10, zero_retry_delay=8.0, per_sub=False,
-              reporter: Reporter | None = None) -> tuple[list[dict], dict]:
+              reporter: Reporter | None = None, flagger: AuthorFlagger | None = None) -> tuple[list[dict], dict]:
     """Facade with the single-file signature: returns (rows as dicts, stats as dict)."""
     options = BatchOptions(limit=limit, sort=sort, time_filter=t, delay=delay, thread_context=thread_context,
                            scope=scope, breaker_after=breaker_after, progress_every=progress_every,
                            zero_retry_delay=zero_retry_delay, per_sub=per_sub)
-    result = BatchRunner(rd, terms, options, reporter or StderrReporter()).run(list(subs))
+    result = BatchRunner(rd, terms, options, reporter or StderrReporter(), flagger=flagger).run(list(subs))
     return [r.to_dict() for r in result.rows], result.stats.to_dict()

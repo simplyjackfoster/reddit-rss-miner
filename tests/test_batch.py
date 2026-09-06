@@ -82,8 +82,17 @@ def test_stats_dict_shape_and_conditional_key(fake, terms):
 def test_facade_returns_dicts(fake, terms):
     rows, stats = run_batch(fake, ["x"], terms, 50, "relevance", "all", 0, breaker_after=5, progress_every=0, zero_retry_delay=0, reporter=NullReporter())
     assert isinstance(rows[0], dict) and list(rows[0]) == ["sub", "post_id", "post_title", "item_id", "item_type", "author", "body",
-                                                             "url", "updated", "links", "images", "matched_terms", "matched_in", "snippet"]
+                                                             "url", "updated", "links", "images", "matched_terms", "matched_in", "snippet", "author_flags"]
     assert stats["summary"]["verdicts"]["x :: Tana"] == "confirmed_zero_presence"
+
+
+def test_author_flags_on_batch_rows(fake, terms):
+    from reddit_rss_miner import AuthorFlagger
+    o = BatchOptions(limit=50, delay=0, progress_every=0, breaker_after=0)
+    res = BatchRunner(fake, {"Obsidian": terms["Obsidian"]}, o, NullReporter(), sleep=NO_SLEEP, clock=lambda: 0.0,
+                      flagger=AuthorFlagger.from_specs(["official:b"])).run(["x"])
+    flags = {r.item_type: r.author_flags for r in res.rows}
+    assert flags["comment"] == ["official"] and flags["post"] == []
 
 
 def test_sinks(fake, terms, tmp_path):

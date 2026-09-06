@@ -34,9 +34,20 @@ def normalize_post_path(post_url_or_path: str) -> str:
     return _POST_PATH.sub(r"/comments/\1/", path)
 
 
+class ListingReader(Protocol):
+    def listing_page(self, subreddit: str, sort: str = "new", after: str | None = None,
+                     limit: int = SEARCH_PAGE_MAX) -> list[Entry]: ...
+
+
 class RedditRSSClient:
     def __init__(self, transport: Transport) -> None:
         self._transport = transport
+
+    def listing_page(self, subreddit: str, sort: str = "new", after: str | None = None,
+                     limit: int = SEARCH_PAGE_MAX) -> list[Entry]:
+        """One page of /r/<sub>/<sort>.rss. Reddit listings end at ~1,000 items regardless of history."""
+        xml = self._transport.get(f"/r/{subreddit}/{sort}.rss", {"limit": min(SEARCH_PAGE_MAX, limit), "after": after})
+        return list(parse_entries(xml))
 
     def search(self, subreddit: str, query: str, limit: int = 25, sort: str = "relevance",
                t: str = "all") -> Iterator[Entry]:
