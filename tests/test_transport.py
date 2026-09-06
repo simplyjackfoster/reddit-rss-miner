@@ -2,7 +2,7 @@ import pytest
 import requests
 
 from reddit_rss_miner.config import Credentials
-from reddit_rss_miner.transport import RateLimitedTransport, RateLimitExceeded
+from reddit_rss_miner.transport import HttpError, RateLimitedTransport, RateLimitExceeded, redact
 
 
 class Resp:
@@ -52,7 +52,29 @@ def test_gives_up_after_max_attempts():
     assert slept == [31.0, 31.0, 31.0]
 
 
-def test_http_error_propagates():
-    t, _, _ = make([Resp(503)])
-    with pytest.raises(requests.HTTPError):
-        t.get("/p")
+def test_http_error_never_carries_credentials():
+    t, _, _ = make([Resp(404)])
+    with pytest.raises(HttpError) as ei:
+        t.get("/r/x/comments/abc/.rss")
+    assert str(ei.value) == "HTTP 404 for /r/x/comments/abc/.rss" and ei.value.status == 404
+    assert "tok" not in str(ei.value) and "usr" not in str(ei.value)
+
+
+def test_redact_strips_feed_and_user_params():
+    url = "https://www.reddit.com/r/x/.rss?limit=5&feed=abc123&user=someone&after=t3_1"
+    assert redact(f"boom for url: {url}") == "boom for url: https://www.reddit.com/r/x/.rss?limit=5&feed=<redacted>&user=<redacted>&after=t3_1"
+
+
+class SpyPacer:
+    def __init__(self): self.acquired, self.penalties = 0, []
+    def acquire(self): self.acquired += 1
+    def penalize(self, seconds): self.penalties.append(seconds)
+
+
+def test_pacer_acquired_per_attempt_and_penalized_on_429():
+    pacer = SpyPacer()
+    slept = []
+    s = Session([Resp(429, headers={"X-Ratelimit-Reset": "9"}), Resp(200, b"ok")])
+    t = RateLimitedTransport(Credentials("t", "u"), session=s, sleep=slept.append, pacer=pacer)
+    assert t.get("/p") == b"ok"
+    assert pacer.acquired == 2 and pacer.penalties == [10.0] and slept == [10.0]

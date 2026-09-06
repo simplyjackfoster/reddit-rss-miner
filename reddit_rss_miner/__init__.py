@@ -14,7 +14,7 @@ from .client import CommentFetcher, PostSearcher, RedditRSSClient, normalize_pos
 from .config import Credentials, MissingCredentials, load_credentials
 from .feed import Entry, extract_media, parse_entries, strip_html
 from .terms import MatchResult, Term, load_terms, match_term
-from .transport import RateLimitedTransport, Transport
+from .transport import HttpError, RateLimitedTransport, Transport, redact
 from .writers import InMemorySink, JsonlFileSink, RowSink
 
 __version__ = "0.2.0"
@@ -31,5 +31,5 @@ __all__ = [
     "Row", "StderrReporter", "TermStats", "run_batch", "CommentFetcher", "PostSearcher", "RedditRSSClient",
     "RedditRSS", "normalize_post_path", "Credentials", "MissingCredentials", "load_credentials", "load_env",
     "Entry", "extract_media", "parse_entries", "strip_html", "MatchResult", "Term", "load_terms", "match_term",
-    "RateLimitedTransport", "Transport", "InMemorySink", "JsonlFileSink", "RowSink",
+    "RateLimitedTransport", "Transport", "HttpError", "redact", "InMemorySink", "JsonlFileSink", "RowSink",
 ]

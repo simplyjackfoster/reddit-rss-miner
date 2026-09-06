@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 from typing import Sequence
 
 from .batch import BatchOptions, BatchRunner, StderrReporter
 from .client import RedditRSSClient
 from .config import MissingCredentials, load_credentials
+from .pacing import FileLockPacer, state_path_for
 from .terms import load_terms
 from .transport import RateLimitedTransport
 from .writers import JsonlFileSink, write_simple_results
@@ -27,7 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--sort", default="relevance", choices=["relevance", "hot", "top", "new", "comments"])
     ap.add_argument("--time", default="all", choices=["hour", "day", "week", "month", "year", "all"])
     ap.add_argument("--post", help="skip search; fetch this post (URL or r/sub/comments/id)")
-    ap.add_argument("--delay", type=float, default=1.0, help="seconds between requests")
+    ap.add_argument("--delay", type=float, default=1.0,
+                    help="minimum seconds between requests, enforced across every process using the same token")
     ap.add_argument("--out", help="simple mode: write [{post, comments}] JSON here")
     ap.add_argument("--subs", help="BATCH: comma-separated subreddits, e.g. productivity,macapps")
     ap.add_argument("--terms", help="BATCH: terms.json (see terms.example.json)")
@@ -44,8 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def build_client() -> RedditRSSClient:
-    return RedditRSSClient(RateLimitedTransport(load_credentials()))
+def build_client(delay: float = 1.0) -> RedditRSSClient:
+    creds = load_credentials()
+    pacer = FileLockPacer(state_path_for(creds.token), interval=delay)   # shared across processes on this token
+    return RedditRSSClient(RateLimitedTransport(creds, pacer=pacer))
 
 
 def run_batch_command(args: argparse.Namespace, client: RedditRSSClient) -> int:
@@ -83,10 +86,8 @@ def run_simple_command(args: argparse.Namespace, client: RedditRSSClient, parser
             parser.error("need subreddit and query, or --post, or --subs + --terms")
         for post in client.search(args.subreddit, args.query, args.limit, args.sort, args.time):
             print(f"{post.id}  {post.title[:80]}")
-            time.sleep(args.delay)
             full, comments = client.comments(post.url or "")
             results.append({"post": (full or post).to_dict(), "comments": [c.to_dict() for c in comments]})
-            time.sleep(args.delay)
 
     for r in results:
         p = r["post"] or {}
@@ -104,7 +105,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        client = build_client()
+        client = build_client(args.delay)
     except MissingCredentials as e:
         print(f"missing credentials: {e}", file=sys.stderr)
         return 2

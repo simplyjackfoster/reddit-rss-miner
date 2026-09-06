@@ -20,6 +20,7 @@ from typing import Callable, Mapping, Protocol, Sequence
 from .client import CommentFetcher, PostSearcher
 from .feed import Entry
 from .terms import DISCARD_REASONS, Term
+from .transport import redact
 
 VERDICT_OK = "ok"
 VERDICT_ZERO = "confirmed_zero_presence"
@@ -43,7 +44,7 @@ class BatchOptions:
     limit: int = 10
     sort: str = "relevance"
     time_filter: str = "all"
-    delay: float = 1.0
+    delay: float = 1.0                 # accepted for compatibility; pacing is enforced by the transport's Pacer
     thread_context: bool = False
     scope: str = "all"                 # all | title | selftext
     breaker_after: int = 12            # 0 disables
@@ -225,7 +226,7 @@ class StderrReporter:
                   "Skipping its remaining posts; query looks too generic.")
 
     def fetch_error(self, post_id, error):
-        self._log(f"[fetch error] {post_id} {type(error).__name__}: {str(error)[:120]} -> skipped, continuing")
+        self._log(f"[fetch error] {post_id} {type(error).__name__}: {redact(str(error))[:120]} -> skipped, continuing")
 
     def progress(self, done, total, rows, fetches, elapsed, eta):
         self._log(f"[{done}/{total} posts] rows {rows} | fetches {fetches} | elapsed {_mmss(elapsed)} | eta ~{_mmss(eta)}")
@@ -330,7 +331,6 @@ class BatchRunner:
                 ts.post_level_precision = round(ts.post_level_hits / len(hits), 3)
             stats.per_search[key] = ts
             self._report.search_done(i, len(jobs), key, ts)
-            self._sleep(self._opt.delay)
         return candidates, order
 
     def _search_with_retry(self, index: int, total: int, key: str, group: str, term: Term) -> tuple[list[Entry], int]:
@@ -364,7 +364,6 @@ class BatchRunner:
                 stats.rows["post"] += 1
                 rows.append(self._row(cand.post, cand.post, MATCHED_IN_POST, [n for n, _ in post_terms], post_terms[0][1]))
 
-            self._sleep(self._opt.delay)
             comments = self._fetch_comments(cand.post, stats)
             if comments is None:
                 continue
@@ -401,7 +400,7 @@ class BatchRunner:
             _, comments = self._client.comments(post.url or "")
         except Exception as e:  # 5xx, timeout, malformed feed: record and keep going
             stats.fetch_errors += 1
-            stats.failed_posts.append({"post_id": post.id, "url": post.url, "error": f"{type(e).__name__}: {e}"[:200]})
+            stats.failed_posts.append({"post_id": post.id, "url": post.url, "error": redact(f"{type(e).__name__}: {e}")[:200]})
             self._report.fetch_error(post.id, e)
             return None
         stats.comment_fetches += 1

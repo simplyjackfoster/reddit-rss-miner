@@ -28,7 +28,7 @@ def test_missing_credentials_exit_code(monkeypatch):
 
 def test_batch_command_writes_files(monkeypatch, tmp_path, terms):
     from conftest import FakeClient
-    monkeypatch.setattr("reddit_rss_miner.cli.build_client", lambda: FakeClient())
+    monkeypatch.setattr("reddit_rss_miner.cli.build_client", lambda delay=1.0: FakeClient())
     monkeypatch.setattr("reddit_rss_miner.cli.load_terms", lambda p: terms)
     monkeypatch.setattr("reddit_rss_miner.batch.time.sleep", lambda s: None)
     rows = tmp_path / "r.jsonl"
