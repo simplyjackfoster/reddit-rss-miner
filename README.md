@@ -50,7 +50,11 @@ Writes `rows.jsonl` (one line per matched post or comment) and `rows.stats.json`
 ### Row schema
 
 `sub, post_id, post_title, item_id, item_type (post|comment), author, body, url, updated,
-matched_terms, matched_in (post|comment|thread_context), snippet`
+links, images, matched_terms, matched_in (post|comment|thread_context), snippet`
+
+`links` holds outbound URLs the author wrote, or the target of a link post. `images` holds `<img>`
+sources. Reddit-internal anchors (user pages, the thread itself, relative paths) are stripped.
+Simple-mode posts and comments also carry `videos` (YouTube, v.redd.it, Vimeo, Streamable).
 
 ### Why the filter exists
 
@@ -97,8 +101,9 @@ A distinctive name (Obsidian) needs only `search` and `aliases`. A common-word n
 
 ### Things that bite
 
-- `--limit` is total across the subs listed (one pooled `r/a+b` search per product), not per sub.
-  Every row carries `sub`.
+- `--limit` is total across the subs listed (one pooled `r/a+b` search per product). Add `--per-sub`
+  to run one search per (subreddit, term) with the limit applied per sub; stats keys then read
+  `<sub> :: <term>`. Every row carries `sub` either way.
 - Each post costs one request for its comments at `--delay` seconds apart (default 1). Ten products
   at 100 posts each is roughly 20 minutes worst case; keep the delay at 1 or higher.
 - Strict filtering is the default. `--thread-context` also keeps non-matching comments under
@@ -119,6 +124,12 @@ for post in rd.search("productivity", '"things 3"', limit=20):
 rows, stats = run_batch(rd, ["productivity", "macapps"], load_terms("terms.json"),
                         limit=100, sort="relevance", t="all", delay=1.0)
 ```
+
+## Credits
+
+Outbound link/image/video extraction from feed HTML and the per-subreddit fetch option were adapted
+from ideas in [sametcn99/reddit-rss-api](https://github.com/sametcn99/reddit-rss-api), a Deno
+service that serves subreddit listing feeds as JSON. Re-implemented here in stdlib Python.
 
 ## Tests
 

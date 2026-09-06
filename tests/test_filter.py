@@ -67,6 +67,7 @@ class Fake:
         self.calls, self.fetched, self.fail_url = {}, [], fail_url
 
     def search(self, sub, q, limit, sort, t):
+        self.searched = getattr(self, "searched", []) + [(sub, q)]
         n = self.calls.get(q, 0); self.calls[q] = n + 1
         if "things" in q:  # transient empty first response
             return iter([] if n == 0 else [P("k1", "Things vs Todoist app"), P("k2", "daily thread"), P("shared", "Obsidian and the Things app")])
@@ -93,6 +94,7 @@ def test_batch_retry_breaker_verdicts():
     fk = Fake()
     rows, st = m.run_batch(fk, ["x"], load(), 50, "relevance", "all", 0, breaker_after=5, progress_every=0)
     ps = {k.split(" :: ")[1]: v for k, v in st["per_search"].items()}
+    assert all(k.startswith("x :: ") for k in st["per_search"]), "pooled mode keys are '<subs> :: <term>'"
     assert ps["Things"]["search_attempts"] == 2 and ps["Things"]["zero_hits_recovered_on_retry"] and ps["Things"]["search_hits"] == 3
     assert ps["Tana"]["verdict"] == "confirmed_zero_presence" and ps["Tana"]["search_attempts"] == 2
     assert ps["Craft"]["verdict"] == "breaker_tripped" and ps["Craft"]["breaker_tripped_after_posts"] == 5
@@ -106,7 +108,7 @@ def test_batch_retry_breaker_verdicts():
 def test_breaker_off_gives_hits_but_no_matches():
     terms = load(); fk = Fake()
     _, st = m.run_batch(fk, ["x"], {"Craft": terms["Craft"]}, 50, "relevance", "all", 0, breaker_after=0, progress_every=0)
-    assert st["summary"]["verdicts"] == {"Craft": "hits_but_no_matches"} and len(fk.fetched) == 21
+    assert st["summary"]["verdicts"] == {"x :: Craft": "hits_but_no_matches"} and len(fk.fetched) == 21
 
 
 def test_fetch_error_does_not_abort_run():
@@ -114,6 +116,31 @@ def test_fetch_error_does_not_abort_run():
     rows, st = m.run_batch(fk, ["x"], {"Obsidian": terms["Obsidian"]}, 50, "relevance", "all", 0, breaker_after=0, progress_every=0)
     assert st["fetch_errors"] == 1 and st["failed_posts"][0]["post_id"] == "t3_b1"
     assert st["comment_fetches"] == 1 and st["summary"]["fetch_errors"] == 1
+
+
+def test_per_sub_searches_each_subreddit_separately():
+    terms = load(); fk = Fake()
+    rows, st = m.run_batch(fk, ["alpha", "beta"], {"Obsidian": terms["Obsidian"]}, 50, "relevance", "all", 0,
+                           breaker_after=0, progress_every=0, per_sub=True)
+    subs_searched = [s for s, q in fk.searched if "obsidian" in q]
+    assert subs_searched == ["alpha", "beta"], subs_searched
+    assert set(st["per_search"]) == {"alpha :: Obsidian", "beta :: Obsidian"}
+    assert st["posts_deduped"] == 2, "same posts returned for both subs must be deduped, fetched once"
+    assert len([u for u in fk.fetched]) == 2
+    assert all(len(r["matched_terms"]) == 1 for r in rows), "a term matched via two subs must appear once per row"
+
+
+def test_extract_media_drops_reddit_boilerplate_keeps_outbound():
+    content = ('<div class="md"><p>Compare <a href="https://culturedcode.com/things/">Things</a> and '
+               '<a href="https://www.youtube.com/watch?v=abc">this video</a> <img src="https://i.redd.it/x.png"></p></div>'
+               ' submitted by <a href="https://www.reddit.com/user/someone"> /u/someone </a> '
+               '<span><a href="https://example.org/review">[link]</a></span> '
+               '<span><a href="https://www.reddit.com/r/productivity/comments/abc123/x/">[comments]</a></span>')
+    got = m.extract_media(content)
+    assert got["links"] == ["https://culturedcode.com/things/", "https://example.org/review"], got
+    assert got["videos"] == ["https://www.youtube.com/watch?v=abc"]
+    assert got["images"] == ["https://i.redd.it/x.png"]
+    assert m.extract_media("") == {"links": [], "images": [], "videos": []}
 
 
 if __name__ == "__main__":

@@ -21,8 +21,8 @@ CREDENTIALS (never committed; see .env.example)
     inbox). Changing the account password invalidates it immediately (kill switch).
 
 WHAT YOU GET
-  - Posts:    id (t3_xxx), title, author, url, updated, body (HTML stripped)
-  - Comments: id (t1_xxx), author, url (permalink), updated, body
+  - Posts:    id (t3_xxx), title, author, url, updated, body (HTML stripped), links, images, videos
+  - Comments: id (t1_xxx), author, url (permalink), updated, body, links, images, videos
   - Comments are FLAT. RSS carries no score, no parent id, no depth, no total count.
   - search.rss returns max 100 per page; the script paginates with &after=<last t3 id>
     (verified: --limit 110 -> 110 unique ids).
@@ -55,7 +55,10 @@ BATCH MODE (subreddits x products, filtered, with disclosed discard stats)
   - A failed comment fetch (5xx, timeout, malformed feed) is logged, recorded in stats.failed_posts
     and fetch_errors, and the run continues. Re-run those post ids with --post if they matter.
   - --subs a,b runs ONE pooled search per product (r/a+b), so --limit 100 is 100 posts total across
-    the listed subs, not per sub. For per-sub quotas, run once per sub. Every row carries `sub`.
+    the listed subs. Add --per-sub for one search per (sub, term) with the limit applied per sub;
+    stats keys then read "<sub> :: <term>". Every row carries `sub` either way.
+  - Rows also carry `links` (outbound URLs the author wrote, or the target of a link post) and
+    `images`. Reddit-internal anchors (user pages, the thread itself) are stripped.
   - Stats granularity: discards-by-reason count (item, term) pairs; discard_rate is per item.
     They only sum exactly when no post is hit by more than one term.
   - Search operators verified on search.rss: quoted phrases, title:, selftext:, r/a+b multi-sub,
@@ -113,6 +116,30 @@ def load_env():
     return {"feed": tok, "user": user}
 
 
+_REDDIT_INTERNAL = re.compile(r"^https?://(?:www\.|old\.)?reddit\.com/(?:user/|u/|message/|r/[^/]+/?$|r/[^/]+/comments/)", re.I)
+_VIDEO_HOSTS = ("youtube.com", "youtu.be", "v.redd.it", "vimeo.com", "streamable.com", "redgifs.com")
+
+
+def extract_media(content_html: str) -> dict:
+    """Outbound links, images and videos from an entry's content HTML.
+
+    Reddit's feed content wraps the post body plus boilerplate anchors ("submitted by /u/x",
+    "[link]", "[comments]"). Reddit-internal anchors (user pages, the thread itself, subreddit roots)
+    are dropped, so for a link post the "[link]" anchor yields the external URL, and for a self post
+    or comment only the URLs the author actually wrote survive. Idea ported from
+    sametcn99/reddit-rss-api (extracters.ts), re-implemented with stdlib regex.
+    """
+    hrefs = [html.unescape(h) for h in re.findall(r'<a\s[^>]*?href="([^"]+)"', content_html or "", re.I)]
+    images = [html.unescape(u) for u in re.findall(r'<img\s[^>]*?src="([^"]+)"', content_html or "", re.I)]
+    links, videos, seen = [], [], set(images)
+    for h in hrefs:
+        if h in seen or _REDDIT_INTERNAL.match(h) or not re.match(r"https?://", h, re.I):
+            continue  # relative paths (/r/x, /message/compose) and anchors are Reddit-internal
+        seen.add(h)
+        (videos if any(v in h for v in _VIDEO_HOSTS) else links).append(h)
+    return {"links": links, "images": images, "videos": videos}
+
+
 def strip_html(s: str) -> str:
     s = re.sub(r"<!--.*?-->", "", s or "", flags=re.S)
     s = re.sub(r"<br\s*/?>|</p>|</li>", "\n", s)
@@ -144,13 +171,15 @@ class RedditRSS:
         for e in root.findall("a:entry", NS):
             au = e.find("a:author/a:name", NS)
             link = e.find("a:link", NS)
+            content = e.findtext("a:content", default="", namespaces=NS)
             yield {
                 "id": e.findtext("a:id", default="", namespaces=NS),
                 "title": e.findtext("a:title", default="", namespaces=NS),
                 "author": (au.text if au is not None else "").removeprefix("/u/") or None,
                 "url": link.get("href") if link is not None else None,
                 "updated": e.findtext("a:updated", default="", namespaces=NS),
-                "body": strip_html(e.findtext("a:content", default="", namespaces=NS)),
+                "body": strip_html(content),
+                **extract_media(content),
             }
 
     # ---- search ----
@@ -262,7 +291,7 @@ def _log(msg):
 
 
 def run_batch(rd, subs, terms, limit, sort, t, delay, thread_context=False, scope="all",
-              breaker_after=12, progress_every=10, zero_retry_delay=8.0):
+              breaker_after=12, progress_every=10, zero_retry_delay=8.0, per_sub=False):
     """Returns (rows, stats). See header for row schema and the per-term verdict field.
 
     Data-integrity safeguards:
@@ -275,6 +304,8 @@ def run_batch(rd, subs, terms, limit, sort, t, delay, thread_context=False, scop
         generic or aliases wrong) | breaker_tripped.
       - post_level_precision per term is computed before any comment fetch: share of search hits
         whose own title/body names the product. Free early signal of query quality.
+      - per_sub=True runs one search per (subreddit, term) instead of one pooled r/a+b search per
+        term, so `limit` applies per subreddit. Stats keys become "<sub> :: <term>".
     """
     t0 = time.time()
     stats = {"per_search": {}, "discarded": {"no_mention": 0, "excluded_pattern": 0, "missing_required_context": 0},
@@ -282,25 +313,26 @@ def run_batch(rd, subs, terms, limit, sort, t, delay, thread_context=False, scop
              "posts_skipped_by_breaker": 0, "fetch_errors": 0, "failed_posts": [],
              "rows": {"post": 0, "comment": 0, "thread_context": 0}}
     rows = []
-    sub_expr = "+".join(subs)
-    posts = {}       # post_id -> {"post": p, "hits": {term names}}
+    groups = list(subs) if per_sub else ["+".join(subs)]
+    posts = {}       # post_id -> {"post": p, "hits": {(group, term)}}
     order = []       # post ids in first-seen order
 
-    def key(name):
-        return f"{sub_expr} :: {name}"
+    def key(group, name):
+        return f"{group} :: {name}"
 
     # ---- phase 1: searches (with zero-hit retry) ----
-    for i, (name, tcfg) in enumerate(terms.items(), 1):
+    jobs = [(g, n, c) for g in groups for n, c in terms.items()]
+    for i, (group, name, tcfg) in enumerate(jobs, 1):
         q = tcfg["search"]
         if scope in ("title", "selftext"):
             q = f"{scope}:{q}"
         attempts, hits_list = 0, []
         while True:
             attempts += 1
-            hits_list = list(rd.search(sub_expr, q, limit=limit, sort=sort, t=t))
+            hits_list = list(rd.search(group, q, limit=limit, sort=sort, t=t))
             if hits_list or attempts >= 2:
                 break
-            _log(f"[search {i}/{len(terms)}] {name}: 0 hits, retrying once in {zero_retry_delay:.0f}s")
+            _log(f"[search {i}/{len(jobs)}] {group} :: {name}: 0 hits, retrying once in {zero_retry_delay:.0f}s")
             time.sleep(zero_retry_delay)
         ps = {"search_hits": len(hits_list), "search_attempts": attempts,
               "zero_hits_recovered_on_retry": bool(hits_list) and attempts > 1,
@@ -313,13 +345,13 @@ def run_batch(rd, subs, terms, limit, sort, t, delay, thread_context=False, scop
                 stats["posts_deduped"] += 1
             else:
                 order.append(p["id"])
-            posts.setdefault(p["id"], {"post": p, "hits": set()})["hits"].add(name)
+            posts.setdefault(p["id"], {"post": p, "hits": set()})["hits"].add((group, name))
             if match_term(f"{p['title']}\n{p['body']}", tcfg)[0]:
                 ps["post_level_hits"] += 1
         if hits_list:
             ps["post_level_precision"] = round(ps["post_level_hits"] / len(hits_list), 3)
-        stats["per_search"][key(name)] = ps
-        _log(f"[search {i}/{len(terms)}] {name}: {len(hits_list)} hits, "
+        stats["per_search"][key(group, name)] = ps
+        _log(f"[search {i}/{len(jobs)}] {group} :: {name}: {len(hits_list)} hits, "
              f"{ps['post_level_hits']} name the product in title/body"
              + (" (recovered after empty first response)" if ps["zero_hits_recovered_on_retry"] else ""))
         time.sleep(delay)
@@ -329,7 +361,7 @@ def run_batch(rd, subs, terms, limit, sort, t, delay, thread_context=False, scop
     for n, pid in enumerate(order, 1):
         entry = posts[pid]
         p = entry["post"]
-        active = [name for name in entry["hits"] if name not in tripped]
+        active = [(g, name) for (g, name) in entry["hits"] if (g, name) not in tripped]
         if not active:
             stats["posts_skipped_by_breaker"] += 1
             if progress_every and n == len(order):
@@ -338,17 +370,19 @@ def run_batch(rd, subs, terms, limit, sort, t, delay, thread_context=False, scop
             continue
         sub = p["url"].split("/r/")[1].split("/")[0] if "/r/" in (p["url"] or "") else None
         post_terms = []
-        for name in active:
+        for g, name in active:
             ok, reason, snip = match_term(f"{p['title']}\n{p['body']}", terms[name])
             if ok:
-                post_terms.append((name, snip))
-                stats["per_search"][key(name)]["posts_kept"] += 1
+                if name not in [x for x, _ in post_terms]:
+                    post_terms.append((name, snip))
+                stats["per_search"][key(g, name)]["posts_kept"] += 1
             else:
                 stats["discarded"][reason] += 1
         if post_terms:
             stats["rows"]["post"] += 1
             rows.append({"sub": sub, "post_id": pid, "post_title": p["title"], "item_id": pid, "item_type": "post",
                          "author": p["author"], "body": p["body"], "url": p["url"], "updated": p["updated"],
+                         "links": p.get("links", []), "images": p.get("images", []),
                          "matched_terms": [x for x, _ in post_terms], "matched_in": "post", "snippet": post_terms[0][1]})
 
         time.sleep(delay)
@@ -361,15 +395,16 @@ def run_batch(rd, subs, terms, limit, sort, t, delay, thread_context=False, scop
             continue
         stats["comment_fetches"] += 1
         stats["comments_total"] += len(comments)
-        for name in active:
-            stats["per_search"][key(name)]["comments_fetched"] += len(comments)
+        for g, name in active:
+            stats["per_search"][key(g, name)]["comments_fetched"] += len(comments)
         for c in comments:
             c_terms = []
-            for name in active:
+            for g, name in active:
                 ok, reason, snip = match_term(c["body"], terms[name])
                 if ok:
-                    c_terms.append((name, snip))
-                    stats["per_search"][key(name)]["comments_kept"] += 1
+                    if name not in [x for x, _ in c_terms]:
+                        c_terms.append((name, snip))
+                    stats["per_search"][key(g, name)]["comments_kept"] += 1
                 else:
                     stats["discarded"][reason] += 1
             if c_terms:
@@ -382,17 +417,18 @@ def run_batch(rd, subs, terms, limit, sort, t, delay, thread_context=False, scop
                 continue
             rows.append({"sub": sub, "post_id": pid, "post_title": p["title"], "item_id": c["id"], "item_type": "comment",
                          "author": c["author"], "body": c["body"], "url": c["url"], "updated": c["updated"],
+                         "links": c.get("links", []), "images": c.get("images", []),
                          "matched_terms": mt, "matched_in": kind, "snippet": snip})
 
-        for name in active:
-            ps = stats["per_search"][key(name)]
+        for g, name in active:
+            ps = stats["per_search"][key(g, name)]
             ps["posts_evaluated"] += 1
             if (breaker_after and ps["posts_evaluated"] >= breaker_after
                     and ps["posts_kept"] == 0 and ps["comments_kept"] == 0):
-                tripped.add(name)
+                tripped.add((g, name))
                 ps["breaker_tripped"] = True
                 ps["breaker_tripped_after_posts"] = ps["posts_evaluated"]
-                _log(f"[breaker] {name}: 0 rows after {ps['posts_evaluated']} posts / "
+                _log(f"[breaker] {g} :: {name}: 0 rows after {ps['posts_evaluated']} posts / "
                      f"{ps['comments_fetched']} comments. Skipping its remaining posts; query looks too generic.")
 
         if progress_every and (n % progress_every == 0 or n == len(order)):
@@ -404,8 +440,7 @@ def run_batch(rd, subs, terms, limit, sort, t, delay, thread_context=False, scop
                  f"elapsed {int(el)//60}:{int(el)%60:02d} | eta ~{int(eta)//60}:{int(eta)%60:02d}")
 
     # ---- verdicts + summary ----
-    for name in terms:
-        ps = stats["per_search"][key(name)]
+    for ps in stats["per_search"].values():
         if ps["search_hits"] == 0:
             ps["verdict"] = "confirmed_zero_presence"      # 0 hits on two attempts
         elif ps["breaker_tripped"]:
@@ -425,7 +460,7 @@ def run_batch(rd, subs, terms, limit, sort, t, delay, thread_context=False, scop
                         "posts_skipped_by_breaker": stats["posts_skipped_by_breaker"],
                         "fetch_errors": stats["fetch_errors"],
                         "elapsed_seconds": round(time.time() - t0, 1),
-                        "verdicts": {name: stats["per_search"][key(name)]["verdict"] for name in terms}}
+                        "verdicts": {k: v["verdict"] for k, v in stats["per_search"].items()}}
     return rows, stats
 
 
@@ -450,6 +485,8 @@ def main():
     ap.add_argument("--breaker", type=int, default=12,
                     help="BATCH: trip a term after this many fully-evaluated posts with zero rows; 0 disables")
     ap.add_argument("--progress", type=int, default=10, help="BATCH: progress line to stderr every N posts; 0 disables")
+    ap.add_argument("--per-sub", action="store_true",
+                    help="BATCH: one search per (subreddit, term) so --limit applies per subreddit, instead of one pooled r/a+b search")
     a = ap.parse_args()
 
     rd = RedditRSS(load_env())
@@ -458,7 +495,7 @@ def main():
         subs = [x.strip() for x in a.subs.split(",") if x.strip()]
         terms = load_terms(a.terms)
         rows, stats = run_batch(rd, subs, terms, a.limit, a.sort, a.time, a.delay, a.thread_context, a.scope,
-                                breaker_after=a.breaker, progress_every=a.progress)
+                                breaker_after=a.breaker, progress_every=a.progress, per_sub=a.per_sub)
         with open(a.rows, "w") as f:
             for r in rows:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -472,7 +509,7 @@ def main():
         print(f"discards by reason: {stats['discarded']}")
         print("per-term verdicts:")
         for k, v in stats["per_search"].items():
-            print(f"  {v['verdict']:24s} {k.split(' :: ')[1]:20s} hits={v['search_hits']} post_precision={v['post_level_precision']} "
+            print(f"  {v['verdict']:24s} {k:34s} hits={v['search_hits']} post_precision={v['post_level_precision']} "
                   f"posts_kept={v['posts_kept']} comments_kept={v['comments_kept']}/{v['comments_fetched']}"
                   + (f" (tripped after {v['breaker_tripped_after_posts']} posts)" if v["breaker_tripped"] else ""))
         print(f"stats -> {stats_path}")
